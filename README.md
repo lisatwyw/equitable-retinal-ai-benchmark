@@ -23,6 +23,7 @@ Leveraging the recently proposed [RETFound-Green](https://github.com/justinengel
 
   <summary>Details</summary>
 
+ 
 ### Input Resolutions
 
 To evaluate the effect of input resolution on cross-camera performance, images were evaluated at four input resolutions:
