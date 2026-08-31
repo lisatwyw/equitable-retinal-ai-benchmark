@@ -2,11 +2,12 @@
 
 ```
 src/
-├── config.py         # Centralized hyperparameters & task schemas
-├── dataset.py        # PyTorch Dataset implementation
-├── models.py         # Vision backbone & Classifier factory
-├── pipeline.py       # Feature extraction, training, evaluation
-└── main.py           # CLI entry point for execution
+├── config.py             # Centralized hyperparameters and task schemas
+├── dataset.py            # PyTorch dataset implementation
+├── models.py             # Model architectures and development pipeline
+├── pipeline.py           # Feature extraction, training, and evaluation
+├── main.py               # CLI entry point
+└── reproducibility.py    # Fixed random seeds for reproducibility
 ```
 
 
