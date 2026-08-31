@@ -1,4 +1,4 @@
-# retinal-camera-domain-shift
+# ERAB: Equitable Retinal AI Benchmark
 
 ```
 src/
@@ -19,9 +19,26 @@ Leveraging the recently proposed [RETFound-Green](https://github.com/justinengel
 | $n$ | 7387 | 2191 | 946 | 5639 |
  
 
+
 <details>
 
-  <summary>Details</summary>
+<summary>Reproducing the experimental results</summary> 
+
+## Installation
+
+```bash
+git clone https://github.com/lisatwyw/equitable-retinal-ai-benchmark.git
+cd equitable-retinal-ai-benchmark
+pip install -r requirements.txt
+```
+
+
+</details>
+
+
+<details>
+
+<summary>Details on the experimental setup</summary>
 
  
 ### Input Resolutions
