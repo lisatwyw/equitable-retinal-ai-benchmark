@@ -16,4 +16,22 @@ Leveraging the recently proposed [RETFound-Green](https://github.com/justinengel
 
 |     | Train | Validation | Test |  External Test |
 | :-- | :-- | :-- | :-- |  :-- |
-| $n$ | | | | | |
+| $n$ | 7387 | 2191 | 946 | 5639 |
+ 
+
+<details>
+
+  <summary>Details</summary>
+
+### Input Resolutions
+
+To evaluate the effect of input resolution on cross-camera performance, images were evaluated at four input resolutions:
+
+* **224 × 224**
+* **392 × 392** — the input resolution used during RETFound-Green pretraining
+* **672 × 672**
+* **952 × 952**
+
+For each resolution, the same resizing and normalization procedure was applied across Canon CR-2 and Nikon NF5050 images. This allowed us to assess whether increasing input resolution mitigates camera-associated performance differences.
+
+</details>
