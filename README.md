@@ -122,3 +122,8 @@ To evaluate the effect of input resolution on cross-camera performance, images w
 For each resolution, the same resizing and normalization procedure was applied across Canon CR-2 and Nikon NF5050 images. This allowed us to assess whether increasing input resolution mitigates camera-associated performance differences.
 
 </details>
+
+
+<details> 
+<a href="https://info.flagcounter.com/ud5H"><img src="https://s01.flagcounter.com/count2/ud5H/bg_FFFFFF/txt_000000/border_CCCCCC/columns_2/maxflags_10/viewers_0/labels_0/pageviews_0/flags_0/percent_0/" alt="Flag Counter" border="0"></a>
+</details>
