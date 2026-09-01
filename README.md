@@ -18,6 +18,7 @@ Leveraging the recently proposed [RETFound-Green](https://github.com/justinengel
 |     | Train | Validation | Test |  External Test |
 | :-- | :-- | :-- | :-- |  :-- |
 | $n$ | 7387 | 2191 | 946 | 5639 |
+| camera | Canon CR-2 | Canon CR-2 |Canon CR-2   | Nikon NF5050 |
  
 
 <details>
@@ -123,7 +124,9 @@ For each resolution, the same resizing and normalization procedure was applied a
 
 </details>
 
+<br/>
+<br/>
+<hr>
+<br/>
+<a href="https://info.flagcounter.com/ud5H"><img src="https://s01.flagcounter.com/count2/ud5H/bg_FFFFFF/txt_000000/border_CCCCCC/columns_2/maxflags_10/viewers_0/labels_0/pageviews_0/flags_0/percent_0/" alt="Flag Counter" width=20px border="0"></a>
 
-<details> 
-<a href="https://info.flagcounter.com/ud5H"><img src="https://s01.flagcounter.com/count2/ud5H/bg_FFFFFF/txt_000000/border_CCCCCC/columns_2/maxflags_10/viewers_0/labels_0/pageviews_0/flags_0/percent_0/" alt="Flag Counter" border="0"></a>
-</details>
