@@ -1,3 +1,5 @@
+# exec( open('pipeline.py').read())
+
 import os, math, random, argparse, yaml
 import numpy as np
 import pandas as pd
@@ -47,8 +49,6 @@ set_all_seeds(SEED)
 
 
 
-
-
 def load_config(path):
     with open(path, "r") as f:
         return yaml.safe_load(f)
@@ -90,13 +90,10 @@ except:
     # PARAMETERS
     # ----------------------------------------------------
     #PATCH_SIZE = 14
-    RES1=RES2= np.uint16(14*28*2.5)
-     
+    RES1=RES2= np.uint16(14*28*2.5)     
     NUM_CLASSES = 2
-    LR = 1e-4
-    MAX_EPOCHS = 2
-    tasks = ['A']  
-    BS = 8
+    LR = 1e-5    
+    MAX_EPOCHS = 20
     centroid_crop = True 
     if os.path.exists('/kaggle'):
         DATA_DIR = '/kaggle/input/datasets/andrewmvd/ocular-disease-recognition-odir5k/ODIR-5K/ODIR-5K/'
@@ -105,11 +102,35 @@ except:
     else:
         CHKPATH = f"/project/{USERID}/HowRU/retinal/assets/retfoundgreen_statedict.pth"
         DATA_DIR = f'/project/{USERID}/ODIR-5K/ODIR-5K/'            
-        IM_DIR = DATA_DIR + '/trn'
-        
+        IM_DIR = DATA_DIR + '/trn'       
     metadata_file = DATA_DIR + 'data.xlsx'    
     
 odir_df = pd.read_excel( metadata_file )
+
+tasks = ['A']  
+from typing import List, Tuple
+from dataclasses import dataclass, field
+@dataclass
+class Config:
+    IMBALANCE: str = 'atleastone'#'increasebs'
+    BS: int = 32
+    PATIENCE: int =10
+    ALPHA: float = 0.1
+    MODE: str = 'dual_view'
+    MAX_EPOCHS: int = MAX_EPOCHS
+    LOSS: str = 'BCEL' #'LATENT'
+    tasks: List[str] = field(default_factory=lambda: tasks )
+    n_bootstrap: int = 100
+    ci_level: float = 0.95
+    resolutions: List[int] = field(default_factory=lambda: [RES1,RES2])    
+    res_dir: str = "../res/"    
+    @property
+    def comps(self) -> List[Tuple[int, int]]:
+        return list(combinations(self.resolutions, 2))
+
+    def checkpoint_filepath(self):
+        return f"{self.res_dir}{self.MODE}_ls{self.LOSS}_res{self.resolutions[0]}_bs{self.BS}_{self.IMBALANCE}.pt"
+        
 
 
 # ----------------------------------------------------
@@ -585,10 +606,8 @@ def get_backbone( RES1, RES2):
     if "state_dict" in checkpoint:
         state_dict = checkpoint["state_dict"]
     else:
-        state_dict = checkpoint
-    
-    print("Checkpoint pos_embed:", state_dict["pos_embed"].shape)
-    
+        state_dict = checkpoint    
+    print("Checkpoint pos_embed:", state_dict["pos_embed"].shape)    
     # --------------------------------------------------
     # Interpolate positional embeddings
     # --------------------------------------------------
@@ -636,7 +655,6 @@ class EarlyStopping:
     def __call__(self, current_score, model):
         # Convert performance metrics so that higher scores are always better
         score = -current_score if self.mode == "min" else current_score
-
         if self.best_score is None:
             self.best_score = score
             self.save_checkpoint(model)
@@ -654,189 +672,141 @@ class EarlyStopping:
         torch.save(model.state_dict(), self.checkpoint_path)
         print(f"Validation improved! Saving optimal model weights state to: {self.checkpoint_path}")
 
-def train_with_early_stopping(model, chkpoint_filepath, trn_loader, val_loader, target_cols, mode, device, patience=5, alpha=0.1):
-    print(f"\n>>> Launching Development Loop [Configuration Mode: {mode.upper()}]")
-        
-    model.to(device)
-    optimizer = optim.AdamW(model.parameters(), lr=1e-4)    
-    early_stopper = EarlyStopping(patience=patience, checkpoint_path = chkpoint_filepath, mode="min")
-    
-    n_positive = trn_df[target_cols].values.sum()    
-    n_negative = len(trn_df) - n_positive        
-    pos_weight = torch.tensor([n_negative / n_positive], dtype=torch.float32, device=DEVICE ); 
-    print(pos_weight, '???')
-    
+def train_with_early_stopping(model, trn_loader, val_loader, conf, ):
+    target_cols = conf.tasks
+    n = conf.checkpoint_filepath()
+    print(f"\n>>> Launching Development Loop [Configuration Mode: {conf.MODE.upper()}]\n", n)
+    model.to(DEVICE)
+    optimizer = optim.AdamW(model.parameters(), lr=1e-4)
+    early_stopper = EarlyStopping(patience=conf.PATIENCE, checkpoint_path=n, mode="min")
+
+    n_positive = trn_df[target_cols].values.sum()
+    n_negative = len(trn_df) - n_positive
+    pos_weight = torch.tensor([n_negative / n_positive], dtype=torch.float32, device=DEVICE)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    
-    print('Positive class weight:',pos_weight)
-    for epoch in range(1, MAX_EPOCHS + 1):
-        model.train(); train_loss = 0.0        
+    print("Positive class weight:", pos_weight)
+
+    for epoch in range(1, conf.MAX_EPOCHS + 1):
+        model.train(); train_loss = 0.0
+
         for data in trn_loader:
             optimizer.zero_grad()
-            
-            if mode == "dual_view":
+            if conf.MODE == "dual_view":
                 v1, v2, targets, indices = data
-                
-                v1, v2, targets = v1.to(device), v2.to(device), targets.to(device)
+                v1, v2, targets = v1.to(DEVICE), v2.to(DEVICE), targets.to(DEVICE)
                 outputs, z_L, z_R, z_P = model(v1, v2)
-                
-                # Primary Task Loss
-                loss_cls = criterion(outputs, targets)
-                
-                # --- MATHEMATICAL LATENT ALIGNMENT MSE COST ---
-                # Detach the anchor to prevent representations from collapsing into constants
-                anchor = z_P.detach()
-                loss_mse_L = F.mse_loss(z_L, anchor)
-                loss_mse_R = F.mse_loss(z_R, anchor)
-                loss_alignment = 0.5 * (loss_mse_L + loss_mse_R)
-                
-                # Combine losses scaled by regularization hyperparameter alpha
-                loss = loss_cls + (alpha * loss_alignment)
             else:
                 v1, targets, indices = data
-                v1, targets = v1.to(device), targets.to(device)
+                v1, targets = v1.to(DEVICE), targets.to(DEVICE)
                 outputs, _, _, _ = model(v1, view2=None)
-                loss = criterion(outputs, targets)
-
-            #print( indices.to_numpy(), end='|', flush=True )
+            loss = criterion(outputs, targets)
+            if (conf.MODE == "dual_view") and ('LATENT' in conf.LOSS):
+                anchor = z_P.detach()
+                loss_alignment = 0.5 * (F.mse_loss(z_L, anchor) + F.mse_loss(z_R, anchor))
+                loss = loss +  conf.ALPHA * loss_alignment
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
-            
         avg_train_loss = train_loss / len(trn_loader)
-        
-        # --- B. VALIDATION PASS WITH TASK-WISE AUROC TRACKING ---
-        model.eval()
-        val_loss = 0.0        
-        all_true_labels = []
-        all_pred_probs = []        
+
+        model.eval(); val_loss = 0.0
+        all_true_labels, all_pred_probs = [], []
+
         with torch.no_grad():
             for data in val_loader:
-                if mode == "dual_view":
-                    v1_val, v2_val, targets_val, _ = data 
-                    v2_val = v2_val.to(device)
+                if conf.MODE == "dual_view":
+                    v1_val, v2_val, targets_val, _ = data
+                    v1_val, v2_val, targets_val = v1_val.to(DEVICE), v2_val.to(DEVICE), targets_val.to(DEVICE)
+                    outputs_val, z_L, z_R, z_P = model(v1_val, v2_val)
                 else:
-                    v1_val, targets_val, _ = data 
-                    v2_val = None
-                    
-                v1_val, targets_val = v1_val.to(device), targets_val.to(device)
-                outputs_val, _, _, _ = model(v1_val, v2_val) # Single-view capabilities check
-                
+                    v1_val, targets_val, _ = data
+                    v1_val, targets_val = v1_val.to(DEVICE), targets_val.to(DEVICE)
+                    outputs_val, _, _, _ = model(v1_val, view2=None)
+
                 loss_val = criterion(outputs_val, targets_val)
+                if (conf.MODE == "dual_view") and ('LATENT' in conf.LOSS):
+                    loss_alignment = 0.5 * (F.mse_loss(z_L, z_P) + F.mse_loss(z_R, z_P))
+                    loss_val = loss_val + conf.ALPHA * loss_alignment
                 val_loss += loss_val.item()
-                
-                # Collect probabilities for multi-label tasks evaluation
-                probs_val = torch.sigmoid(outputs_val)
                 all_true_labels.append(targets_val.cpu().numpy())
-                all_pred_probs.append(probs_val.cpu().numpy())
-                
+                all_pred_probs.append(torch.sigmoid(outputs_val).cpu().numpy())
+
         avg_val_loss = val_loss / len(val_loader)
-        
-        # Format stacked arrays across dimensions [Samples, Classes]
-        y_true_all = np.vstack(all_true_labels)
-        y_pred_all = np.vstack(all_pred_probs)
-        
-        # Compute Macro-AUROC using your custom calc_bin suite class-by-class
+        y_true_all, y_pred_all = np.vstack(all_true_labels), np.vstack(all_pred_probs)
         auroc_scores = []
         for class_idx, class_name in enumerate(target_cols):
-            task_auroc = calc_bin(y_true_all[:, class_idx], y_pred_all[:, class_idx], t=0.5, m="AUROC")
-            if not np.isnan(task_auroc):
-                auroc_scores.append(task_auroc)
-                
-        # Handle structural edge cases if class diversity drops during a tight partition split
-        avg_val_auroc = np.mean(auroc_scores) if len(auroc_scores) > 0 else np.nan
-        
+            score = calc_bin(y_true_all[:, class_idx], y_pred_all[:, class_idx], t=0.5, m="AUROC")
+            if not np.isnan(score):
+                auroc_scores.append(score)
+
+        avg_val_auroc = np.mean(auroc_scores) if auroc_scores else np.nan
         print(f"Epoch {epoch:02d} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Val Macro-AUROC: {avg_val_auroc:.4f}")
-        
-        # --- C. EARLY STOPPING TRIGGER ---
+
         early_stopper(avg_val_loss, model)
         if early_stopper.early_stop:
             print(f">>> Early stopping triggered! Training stopped at epoch {epoch}.")
-            break            
-    # Load the best model weights before returning to ensure optimal test evaluations
-    model.load_state_dict(torch.load( chkpoint_filepath ))
-    print(f"Loaded best weights from checkpoint file successfully.")
-    return model
-# ----------------------------------------------------
-# RUN EXPERIMENT 
-# ----------------------------------------------------
-def run_ablation_study():   
-    # Initialize the architecture matching your targets mapping metrics dynamically
-    siamese_net = SiameseRETFoundGreen(model, len(tasks))
-    
-    # Execute the updated optimization loop with Alpha alignment parameter active
-    model_single_view = train_with_early_stopping(
-        model=siamese_net, 
-        trn_loader=loaders['trn'], 
-        val_loader=loaders['val'], 
-        target_cols=tasks, 
-        mode=MODE, 
-        device=DEVICE,
-        patience=5,
-        alpha=0.1 # Adjust this value between 0.0 and 0.1 to evaluate performance shifts
-    )    
-    return model_single_view          
-# ----------------------------------------------------
-# EVALUATION 
-# ----------------------------------------------------
-def evaluate_on_test_set( mode, model, tst_loader, target_cols, device):
-    print("\n" + "="*60)
-    print("LAUNCHING REUSED CUSTOM EVALUATION CODES ON TST_DF")
-    print("="*60)    
-    model.eval()    
-    all_true_labels = []
-    all_single_probs = []
-    
-    with torch.no_grad():        
-        for data in tst_loader:
-            if 'dual' in mode:
-                test_v1, test_v2, test_targets, _ = data
-                test_v2 = test_v2.to(device)
-            else:
-                test_v1, test_targets, _ = data
-                test_v2 = None            
-            test_v1 = test_v1.to(device)
-            output=model(test_v1,test_v2)
-            if isinstance(output, tuple):
-                logits = output[0]
-            else:
-                logits = output
-                
-            prob_single = torch.sigmoid(logits).cpu().numpy().squeeze()
-            
-            all_true_labels.append(test_targets.numpy().squeeze())
-            all_single_probs.append(prob_single)
-            
-    y_true_matrix = np.atleast_2d(np.array(all_true_labels))
-    y_single_matrix = np.atleast_2d(np.array(all_single_probs))    
-    
-    metrics_to_track = ["AUROC", "AUPRC", "Accuracy", "Balanced_Accuracy", "Specificity"]
-    performance_records = []    
-    for class_idx, class_name in enumerate(target_cols):
-        y_true_task = y_true_matrix[:, class_idx]
-        y_single_task = y_single_matrix[:, class_idx]        
-        for metric in metrics_to_track:
-            score_single = calc_bin(y_true_task, y_single_task, t=0.5, m=metric)
-            performance_records.append({
-                "Pathology_Task": class_name,
-                "Metric": metric,
-                "Single_View_Only": score_single
-            })            
-    metrics_summary_df = pd.DataFrame(performance_records)
-    print("\n>>> MACRO SUMMARY BY METRIC STRATEGIES:")
-    print(metrics_summary_df.groupby(["Metric"])[["Single_View_Only"]].mean())
-    return metrics_summary_df    
-
-def check_batch():
-    for batch_idx, batch_indices in enumerate(train_batch_sampler):
-        print("batch:",  batch_idx, batch_indices)    
-        batch_df = trn_ds.samples.iloc[batch_indices]    
-        n_positive = (            batch_df[tasks[0]] == 1        ).sum()    
-        print(            "size:",            len(batch_indices),            "positive:",            n_positive        )    
-        if batch_idx >= 2:
             break
 
+    model.load_state_dict(torch.load( conf.checkpoint_filepath(), map_location=DEVICE))
+    print("Loaded best weights from checkpoint file successfully.")
+    return model
+   
+# ----------------------------------------------------
+# EVALUATION 
+# ----------------------------------------------------   
+def evaluate_on_test_set( model, tst_loader, conf):
+    target_cols = conf.tasks
+    print("\n" + "=" * 60)
+    print("LAUNCHING EVALUATION ON TEST SET | ", conf.MODE )
+    print("=" * 60)
+    model.to(DEVICE).eval()
+    all_true_labels, all_single_probs = [], []
+    with torch.no_grad():
+        for data in tst_loader:
+            if conf.MODE == "dual_view":
+                test_v1, test_v2, test_targets, _ = data
+                test_v1, test_v2, test_targets = test_v1.to(DEVICE), test_v2.to(DEVICE), test_targets.to(DEVICE)
+                outputs, _, _, _ = model(test_v1, test_v2)
+            else:
+                test_v1, test_targets, _ = data
+                test_v1, test_targets = test_v1.to(DEVICE), test_targets.to(DEVICE)
+                outputs, _, _, _ = model(test_v1, view2=None)
+
+            all_true_labels.append(test_targets.cpu().numpy())
+            all_single_probs.append(torch.sigmoid(outputs).cpu().numpy())
+
+    y_true_matrix = np.concatenate(all_true_labels, axis=0)
+    y_single_matrix = np.concatenate(all_single_probs, axis=0)
+    print("Final y_true shape:", y_true_matrix.shape)
+    print("Final y_pred shape:", y_single_matrix.shape)
+
+    metrics_to_track = ["AUROC", "AUPRC", "Accuracy", "Balanced_Accuracy", "Specificity"]
+    performance_records = []
+    for class_idx, class_name in enumerate(target_cols):
+        y_true_task, y_prob_task = y_true_matrix[:, class_idx], y_single_matrix[:, class_idx]
+        for metric in metrics_to_track:
+            score_single = calc_bin(y_true_task, y_prob_task, t=0.5, m=metric)
+            performance_records.append({"Pathology_Task": class_name, "Metric": metric, conf.MODE: score_single})
+
+    metrics_summary_df = pd.DataFrame(performance_records)
+    print("\n>>> MACRO SUMMARY BY METRIC STRATEGIES:")
+    print(metrics_summary_df.groupby("Metric")[[conf.MODE]].mean())
+    return metrics_summary_df, y_true_matrix, all_single_probs
+    
+def check_batch():
+    for batch_idx, batch_indices in enumerate(train_batch_sampler):
+        print("batch:", batch_idx, batch_indices)    
+        batch_df = trn_ds.samples.iloc[batch_indices]    
+        n_positive = ( batch_df[tasks[0]] == 1 ).sum()    
+        print( "size:", len(batch_indices), "positive:", n_positive )    
+        if batch_idx >= 2:
+            break
+            
+def probability_positive_batch(p, batch_size):
+    return 1.0 - (1.0 - p) ** batch_size
+    
 if __name__ == "__main__":    
+    conf=Config(tasks=tasks)
     df2, tc = reformat_and_prepare_odir( odir_df )
     trn_df, val_df, tst_df = split_dataset_by_patient( df2 )    
     trn_df = filter_existing_images(trn_df, IM_DIR)
@@ -845,49 +815,38 @@ if __name__ == "__main__":
 
     for i in [0,1]: print( 'Trn:',i, (trn_df['A']==i).sum(),end='|');print( 'Val:',i, (val_df['A']==i).sum(),end='|');print( 'Tst:',i, (tst_df['A']==i).sum(),end='\n')
 
-    def probability_positive_batch(p, batch_size):
-        return 1.0 - (1.0 - p) ** batch_size
     p = trn_df[tasks].values.mean()
     for bs in [8, 16, 32, 48, 64]:
         prob = probability_positive_batch(p, bs)    
         print(    f"BS={bs:2d} -> ", f"P(at least one positive)={prob:.3f}" )
-
-    BS = 8
-    IMBALANCE = 'atleastone'#'increasebs'; 
-    print('IMBALANCE CLASS handling method:', IMBALANCE )
+ 
+    print('IMBALANCE CLASS handling method:', conf.IMBALANCE )    
+    YP,YT,res_dfs,models,loaders={},{},{},{},{}
     
-    res_dfs,models,loaders={},{},{}
     for MODE in ['single_view','dual_view']:
-
+        conf.MODE = MODE
+        print(conf.MODE)
         trn_ds = ODIRDataset(trn_df, tasks, image_dir=IM_DIR, mode=MODE, centroid_crop=centroid_crop)
-        if IMBALANCE == 'atleastone':            
-            train_batch_sampler = AtLeastOnePositiveBatchSampler(
-                trn_ds,  
-                batch_size=BS,
-                target_col= tasks[0],
-                drop_last=False,
-                shuffle=True,
-                seed=SEED
-            )
+        if conf.IMBALANCE == 'atleastone':            
+            train_batch_sampler = AtLeastOnePositiveBatchSampler( trn_ds, batch_size=conf.BS, target_col= tasks[0], drop_last=False, shuffle=True, seed=SEED )
             check_batch()
             loaders['trn']  = DataLoader( trn_ds, batch_sampler=train_batch_sampler )
         else:            
-            loaders['trn']  = DataLoader( trn_ds, batch_size=BS, shuffle=True)
-        loaders['val'] = DataLoader(ODIRDataset(val_df, tasks, image_dir=IM_DIR, mode=MODE, centroid_crop=centroid_crop), batch_size=BS, shuffle=True)
-        loaders['tst'] = DataLoader(ODIRDataset(tst_df, tasks, image_dir=IM_DIR, mode=MODE, centroid_crop=centroid_crop), batch_size=BS, shuffle=True)
+            loaders['trn']  = DataLoader( trn_ds, batch_size=conf.BS, shuffle=True)
+        loaders['val'] = DataLoader(ODIRDataset(val_df, tasks, image_dir=IM_DIR, mode=MODE, centroid_crop=centroid_crop), batch_size=conf.BS, shuffle=True)
+        loaders['tst'] = DataLoader(ODIRDataset(tst_df, tasks, image_dir=IM_DIR, mode=MODE, centroid_crop=centroid_crop), batch_size=conf.BS, shuffle=True)
 
-        if 'dual' in MODE:
+        if 'dual' in conf.MODE:
             sample_batch_v1, sample_batch_v2, sample_batch_labels, sample_batch_indices = next(iter( loaders['trn'] ))
             show_batch(sample_batch_v2,8)            
-
-        sample_batch_v1, sample_batch_labels, sample_batch_indices = next(iter(loaders['tst']))
+        else:
+            sample_batch_v1, sample_batch_labels, sample_batch_indices = next(iter(loaders['tst']))
+            show_batch(sample_batch_v1,8)            
         print("Returned Batch Image Shape:", sample_batch_v1.shape)   # Expected: [8, 3, 224, 224]
         print("Returned Batch Label Shape:", sample_batch_labels.shape) # Expected: [8, 1]
         print("Returned Label Values:\n", sample_batch_labels)       
-        
-        show_batch(sample_batch_v1)        
-        model = get_backbone( RES1, RES2) 
-        chkpoint_filepath = f'{MODE}_res{RES1}_bs{BS}_{IMBALANCE}.pt'
-        models[MODE] = train_with_early_stopping( SiameseRETFoundGreen(model, len(tasks)), chkpoint_filepath, loaders['trn'], loaders['val'], tasks, mode=MODE, device=DEVICE )    
-        res_dfs[MODE] = evaluate_on_test_set( MODE, models[MODE], loaders['tst'], tasks, DEVICE)
+                  
+        models[MODE] = SiameseRETFoundGreen( get_backbone( RES1, RES2) , len(tasks))         
+        models[MODE] = train_with_early_stopping( models[MODE], loaders['trn'], loaders['val'], conf )    
+        res_dfs[MODE], YT[MODE], YP[MODE] = evaluate_on_test_set( models[MODE], loaders['tst'], conf)
         print(res_dfs[MODE])  
