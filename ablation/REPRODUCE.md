@@ -60,7 +60,7 @@ Large datasets and experiment outputs should generally not be committed to Git.
 
 <details>
  
-<summary> 2. Development environment on the original HPC system</summary>
+<summary>2. Development environment on the original HPC system</summary>
 
 The first step is to create an isolated Python environment.
 
