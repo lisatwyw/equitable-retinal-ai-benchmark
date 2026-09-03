@@ -105,8 +105,9 @@ except:
     else:
         CHKPATH = f"/project/{USERID}/HowRU/retinal/assets/retfoundgreen_statedict.pth"
         DATA_DIR = f'/project/{USERID}/ODIR-5K/ODIR-5K/'            
-    metadata_file = DATA_DIR + 'data.xlsx'
-    IM_DIR = DATA_DIR + '/trn'
+        IM_DIR = DATA_DIR + '/trn'
+        
+    metadata_file = DATA_DIR + 'data.xlsx'    
     
 odir_df = pd.read_excel( metadata_file )
 
