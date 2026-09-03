@@ -1,6 +1,10 @@
-import os, math, random
+import os, math, random, argparse, yaml
 import numpy as np
 import pandas as pd
+pd.set_option("display.max_rows", None)
+pd.set_option("display.max_columns", None)
+pd.set_option("display.width", None)
+pd.set_option("display.max_colwidth", None)
 import matplotlib.pyplot as plt
 import torch, timm
 import torch.nn as nn
@@ -9,7 +13,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torchvision.transforms.functional as TF
 from torch.autograd import Function
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Sampler
 from torchvision import transforms
 from PIL import Image, ImageDraw
 from sklearn.model_selection import GroupKFold
@@ -18,16 +22,33 @@ from sklearn.metrics import (
     balanced_accuracy_score, precision_score, recall_score, 
     f1_score, confusion_matrix, cohen_kappa_score, mean_absolute_error
 )
+import warnings; warnings.simplefilter("error", FutureWarning)
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+USERID = os.environ.get('USER', '').lower()
+USERID =  f'def-{USERID}-ab' 
+ 
 SEED=41
-random.seed(SEED)
-np.random.seed(SEED)
-torch.manual_seed(SEED)
-torch.cuda.manual_seed_all(SEED)
+def set_all_seeds(seed=42):
+    """Fix all random seeds for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    print(f"All seeds fixed to {seed}.")
+set_all_seeds(SEED)    
 
-import argparse
-import yaml
+
+
+
+
+
+
 def load_config(path):
     with open(path, "r") as f:
         return yaml.safe_load(f)
@@ -51,35 +72,44 @@ parser.add_argument(
     default=None,
     help="Override random seed"
 )
+try:
+    args = parser.parse_args()
+    data_dir = args.data_dir
+    config = load_config(args.config)
+    metadata_file = os.path.join(
+        DATA_DIR,
+        config["dataset"]["metadata_file"]
+    )
+    IM_DIR = os.path.join(
+        DATA_DIR,
+        config["dataset"]["image_subdirectory"]
+    )    
+    
+except:       
+    # ----------------------------------------------------
+    # PARAMETERS
+    # ----------------------------------------------------
+    #PATCH_SIZE = 14
+    RES1=RES2= np.uint16(14*28*2.5)
+     
+    NUM_CLASSES = 2
+    LR = 1e-4
+    MAX_EPOCHS = 2
+    tasks = ['A']  
+    BS = 8
+    centroid_crop = True 
+    if os.path.exists('/kaggle'):
+        DATA_DIR = '/kaggle/input/datasets/andrewmvd/ocular-disease-recognition-odir5k/ODIR-5K/ODIR-5K/'
+        IM_DIR = DATA_DIR + '/Training Images'
+        CHKPATH = 'rfg_statedict.pth';         
+    else:
+        CHKPATH = f"/project/{USERID}/HowRU/retinal/assets/retfoundgreen_statedict.pth"
+        DATA_DIR = f'/project/{USERID}/ODIR-5K/ODIR-5K/'            
+    metadata_file = DATA_DIR + 'data.xlsx'
+    IM_DIR = DATA_DIR + '/trn'
+    
+odir_df = pd.read_excel( metadata_file )
 
-#args = parser.parse_args()
-data_dir = args.data_dir
-config = load_config(args.config)
-
-metadata_file = os.path.join(
-    data_dir,
-    config["dataset"]["metadata_file"]
-)
-image_dir = os.path.join(
-    data_dir,
-    config["dataset"]["image_subdirectory"]
-)
-
-# ----------------------------------------------------
-# PARAMETERS
-# ----------------------------------------------------
-#PATCH_SIZE = 14
-RES1=RES2= np.uint16(14*28*2.5)
- 
-NUM_CLASSES = 2
-LR = 1e-4
-MAX_EPOCHS = 2
-tasks = ['A']  
-BS = 8
-centroid_crop = True 
-DATA_DIR = '/kaggle/input/datasets/andrewmvd/ocular-disease-recognition-odir5k/ODIR-5K/ODIR-5K/'
-odir_df = pd.read_excel( DATA_DIR + 'data.xlsx')
-IM_DIR = DATA_DIR + '/Training Images'
 
 # ----------------------------------------------------
 # LOAD DATA AND SPLIT
@@ -270,7 +300,7 @@ class ODIRDataset(Dataset):
             view1 = self._load_image(row['img_path'])
             if (self.apply_dropout) and (random.random() < 0.30):
                 view1 = torch.zeros_like(view1)
-            return view1, labels, idx
+            return view1, labels, int(idx)
         else:
             view1 = self._load_image(row['Left-Fundus'])
             view2 = self._load_image(row['Right-Fundus'])
@@ -279,78 +309,226 @@ class ODIRDataset(Dataset):
                     view1 = torch.zeros_like(view1)
                 else:
                     view2 = torch.zeros_like(view2)                    
-            return view1, view2, labels, idx
+            return view1, view2, labels, int(idx)
+
+
+ 
+
+
+class AtLeastOnePositiveBatchSampler(Sampler):
+    """
+    Creates batches containing at least one positive sample.
+    Assumes dataset.samples[target_col] contains binary labels.
+    """
+    def __init__(
+        self,
+        dataset,
+        batch_size,
+        target_col,
+        drop_last=False,
+        shuffle=True,
+        seed=41
+    ):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.target_col = target_col
+        self.drop_last = drop_last
+        self.shuffle = shuffle
+        self.seed = seed
+        labels = dataset.samples[target_col].to_numpy()
+
+        self.positive_indices = np.where(labels == 1)[0].tolist()
+        self.negative_indices = np.where(labels == 0)[0].tolist()
+        if len(self.positive_indices) == 0: raise ValueError( f"No positive samples found for target '{target_col}'."  )
+        if len(self.negative_indices) == 0: raise ValueError( f"No negative samples found for target '{target_col}'."  )
+
+    def __iter__(self):
+        rng = random.Random(self.seed)
+        positives = self.positive_indices.copy()
+        negatives = self.negative_indices.copy()
+        if self.shuffle:
+            rng.shuffle(positives)
+            rng.shuffle(negatives)
+        # Number of batches
+        n_samples = len(self.dataset)
+        if self.drop_last:
+            n_batches = n_samples // self.batch_size
+        else:
+            n_batches = math.ceil(n_samples / self.batch_size)
+        batches = []        
+        # Guarantee one positive per batch        
+        for batch_idx in range(n_batches):
+            batch = []
+            # Cycle through positives if there are fewer positives than batches.
+            positive_idx = positives[batch_idx % len(positives)]
+            batch.append(positive_idx)
+            
+            # Fill remaining batch positions
+            remaining = self.batch_size - 1
+
+            if remaining > 0:
+                # Randomly/sample negatives
+                if len(negatives) >= remaining:
+                    batch.extend( rng.sample(negatives, remaining) )
+                else:
+                    # Sampling with replacement if necessary
+                    batch.extend( rng.choices(  negatives,  k=remaining ))
+            if self.shuffle:
+                rng.shuffle(batch)
+            batches.append(batch)
+        for batch in batches:
+            yield batch
+
+    def __len__(self):
+        if self.drop_last:
+            return len(self.dataset) // self.batch_size
+        return math.ceil( len(self.dataset) / self.batch_size )    
+
+class AtLeastOnePositiveBatchSampler(Sampler):
+    """
+    Creates training batches containing at least one positive sample.
+
+    The sampler operates on dataset.samples and assumes target_col
+    contains binary labels {0, 1}.
+    """
+
+    def __init__(
+        self,
+        dataset,
+        batch_size,
+        target_col,
+        drop_last=False,
+        shuffle=True,
+        seed=41
+    ):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.target_col = target_col
+        self.drop_last = drop_last
+        self.shuffle = shuffle
+        self.seed = seed
+
+        # Explicitly access the named column
+        labels = dataset.samples.loc[:, target_col].to_numpy()
+
+        self.positive_indices = np.flatnonzero(labels == 1).tolist()
+        self.negative_indices = np.flatnonzero(labels == 0).tolist()
+
+        if len(self.positive_indices) == 0:
+            raise ValueError(
+                f"No positive samples found for target '{target_col}'."
+            )
+
+        if len(self.negative_indices) == 0:
+            raise ValueError(
+                f"No negative samples found for target '{target_col}'."
+            )
+
+    def __iter__(self):
+
+        rng = random.Random(self.seed)
+
+        positives = self.positive_indices.copy()
+        negatives = self.negative_indices.copy()
+
+        if self.shuffle:
+            rng.shuffle(positives)
+            rng.shuffle(negatives)
+
+        n_samples = len(self.dataset)
+
+        if self.drop_last:
+            n_batches = n_samples // self.batch_size
+        else:
+            n_batches = math.ceil(n_samples / self.batch_size)
+
+        for batch_idx in range(n_batches):
+
+            # Determine actual batch size
+            if (
+                not self.drop_last
+                and batch_idx == n_batches - 1
+            ):
+                current_batch_size = (
+                    n_samples - batch_idx * self.batch_size
+                )
+            else:
+                current_batch_size = self.batch_size
+
+            # Cannot guarantee positive if batch has size 0
+            if current_batch_size <= 0:
+                continue
+
+            # Guarantee one positive
+            positive_idx = positives[
+                batch_idx % len(positives)
+            ]
+
+            batch = [positive_idx]
+
+            # Fill remaining positions
+            remaining = current_batch_size - 1
+
+            if remaining > 0:
+
+                if len(negatives) >= remaining:
+                    batch.extend(
+                        rng.sample(negatives, remaining)
+                    )
+                else:
+                    batch.extend(
+                        rng.choices(
+                            negatives,
+                            k=remaining
+                        )
+                    )
+
+            if self.shuffle:
+                rng.shuffle(batch)
+
+            yield batch
+
+    def __len__(self):
+
+        if self.drop_last:
+            return len(self.dataset) // self.batch_size
+
+        return math.ceil(
+            len(self.dataset) / self.batch_size
+        )
 
 
 # ----------------------------------------------------
 # UTILS
 # ----------------------------------------------------
-def show_batch( sample_batch_imgs, n=8 ):
-    fig, axes = plt.subplots(2, 4, figsize=(16, 8))
+def printl(nlines=1):
+    print('\n'*nlines,'='*80,'\n')
+def show_batch( sample_batch_imgs, n=8, out_file=None ):
+    m=n// 2
+    fig, axes = plt.subplots(m,2,figsize=(16, 8))
     axes = axes.flatten()
     
     # Map task indices back to human-readable names for titles
     task_names = tasks if 'tasks' in locals() else ['Pathology Target']
     
-    for i in range( n ):
-        # Grab an individual image tensor: Shape [3, 392, 392]
-        img_tensor = sample_batch_imgs[i]
-
-        max_pixel_value = img_tensor.max().item()
+    for i in range( n ):        
+        img_tensor = sample_batch_imgs[i]# Grab an individual image tensor: Shape [3, 392, 392]
     
-        # --- CRITICAL FORMAT CONVERSIONS FOR MATPLOTLIB ---
-        # Change dimension layout from [3, 392, 392] to [392, 392, 3]
-        img_numpy = img_tensor.permute(1, 2, 0).cpu().numpy()
+        # --- CRITICAL FORMAT CONVERSIONS FOR MATPLOTLIB ---        
+        img_numpy = img_tensor.permute(1, 2, 0).cpu().numpy() # Change dimension layout from [3, 392, 392] to [392, 392, 3]
         
         # Clip pixel values defensively to [0.0, 1.0] range to avoid floating-point display warning artifacts
-        img_numpy = np.clip(img_numpy, 0.0, 1.0)
+        img_numpy = np.clip(img_numpy, 0.0, 1.0)       
         
-        # 3. Plot the matrix onto the subplot array
-        axes[i].imshow(img_numpy)
-        
-        # Parse target labels matrix to display current true state values
+        axes[i].imshow(img_numpy)                
         label_value = int(sample_batch_labels[i].item())
         axes[i].set_title(f"Sample {i} | Label {task_names[0]}: {label_value}", fontsize=10)
         axes[i].axis('off') # Hide coordinate grid lines for clean presentation    
-    plt.tight_layout()
+    plt.tight_layout()    
     plt.show()
-
-class EarlyStopping:
-    def __init__(self, patience=5, min_delta=0, checkpoint_path="best_model.pt", mode="min"):
-        """
-        Args:
-            patience (int): How many epochs to wait after last time validation improved.
-            min_delta (float): Minimum change in monitored value to qualify as an improvement.
-            checkpoint_path (str): File path to save the optimal weights checkpoint model.
-            mode (str): "min" if tracking a loss function, "max" if tracking a metric like AUROC.
-        """
-        self.patience = patience
-        self.min_delta = min_delta
-        self.checkpoint_path = checkpoint_path
-        self.mode = mode
-        self.counter = 0
-        self.best_score = None
-        self.early_stop = False        
-    def __call__(self, current_score, model):
-        # Convert performance metrics so that higher scores are always better
-        score = -current_score if self.mode == "min" else current_score
-
-        if self.best_score is None:
-            self.best_score = score
-            self.save_checkpoint(model)
-        elif score < self.best_score + self.min_delta:
-            self.counter += 1
-            print(f"EarlyStopping Counter: {self.counter} out of {self.patience}")
-            if self.counter >= self.patience:
-                self.early_stop = True
-        else:
-            self.best_score = score
-            self.save_checkpoint(model)
-            self.counter = 0
-    def save_checkpoint(self, model):
-        """Saves model weights when the validation performance hits a historic high."""
-        torch.save(model.state_dict(), self.checkpoint_path)
-        print(f"Validation improved! Saving optimal model weights state to: {self.checkpoint_path}")
+    if out_file is not None:
+        plt.savefig(f'{out_file}.png')
+            
 
 def specificity_score(y, q):
     tn, fp, _, _ = confusion_matrix(y, q, labels=[0, 1]).ravel()
@@ -398,7 +576,7 @@ def get_backbone( RES1, RES2):
         num_classes=0,
         dynamic_img_size=True,
         )
-    checkpoint_path='rfg_statedict.pth'
+    checkpoint_path= CHKPATH 
     checkpoint = torch.load(
         checkpoint_path,
         map_location="cpu",
@@ -434,9 +612,47 @@ def get_backbone( RES1, RES2):
     print("Patch size:", model.patch_embed.patch_size)
     print("Pos embed:", model.pos_embed.shape)
     return model
+
 # ----------------------------------------------------
 # TRAINING ENGINE 
 # ----------------------------------------------------
+class EarlyStopping:
+    def __init__(self, patience=5, min_delta=0, checkpoint_path="best_model.pt", mode="min"):
+        """
+        Args:
+            patience (int): How many epochs to wait after last time validation improved.
+            min_delta (float): Minimum change in monitored value to qualify as an improvement.
+            checkpoint_path (str): File path to save the optimal weights checkpoint model.
+            mode (str): "min" if tracking a loss function, "max" if tracking a metric like AUROC.
+        """
+        self.patience = patience
+        self.min_delta = min_delta
+        self.checkpoint_path = checkpoint_path
+        self.mode = mode
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False        
+    def __call__(self, current_score, model):
+        # Convert performance metrics so that higher scores are always better
+        score = -current_score if self.mode == "min" else current_score
+
+        if self.best_score is None:
+            self.best_score = score
+            self.save_checkpoint(model)
+        elif score < self.best_score + self.min_delta:
+            self.counter += 1
+            print(f"EarlyStopping Counter: {self.counter} out of {self.patience}")
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.save_checkpoint(model)
+            self.counter = 0
+    def save_checkpoint(self, model):
+        """Saves model weights when the validation performance hits a historic high."""
+        torch.save(model.state_dict(), self.checkpoint_path)
+        print(f"Validation improved! Saving optimal model weights state to: {self.checkpoint_path}")
+
 def train_with_early_stopping(model, trn_loader, val_loader, target_cols, mode, device, patience=5, alpha=0.1):
     print(f"\n>>> Launching Development Loop [Configuration Mode: {mode.upper()}]")
         
@@ -444,21 +660,22 @@ def train_with_early_stopping(model, trn_loader, val_loader, target_cols, mode, 
     optimizer = optim.AdamW(model.parameters(), lr=1e-4)    
     early_stopper = EarlyStopping(patience=patience, checkpoint_path=f"best_{mode}_model.pt", mode="min")
     
-    n_positive = trn_df[target_cols].sum()
-    n_negative = len(trn_df) - n_positive    
-    pos_weight = torch.tensor(
-        [n_negative / n_positive],
-        dtype=torch.float32,
-        device=DEVICE
-    ); criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-        
+    n_positive = trn_df[target_cols].values.sum()    
+    n_negative = len(trn_df) - n_positive        
+    pos_weight = torch.tensor([n_negative / n_positive], dtype=torch.float32, device=DEVICE ); 
+    print(pos_weight, '???')
+    
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    
+    print('Positive class weight:',pos_weight)
     for epoch in range(1, MAX_EPOCHS + 1):
         model.train(); train_loss = 0.0        
         for data in trn_loader:
             optimizer.zero_grad()
             
             if mode == "dual_view":
-                v1, v2, targets, _ = data
+                v1, v2, targets, indices = data
+                
                 v1, v2, targets = v1.to(device), v2.to(device), targets.to(device)
                 outputs, z_L, z_R, z_P = model(v1, v2)
                 
@@ -475,11 +692,12 @@ def train_with_early_stopping(model, trn_loader, val_loader, target_cols, mode, 
                 # Combine losses scaled by regularization hyperparameter alpha
                 loss = loss_cls + (alpha * loss_alignment)
             else:
-                v1, targets, _ = data
+                v1, targets, indices = data
                 v1, targets = v1.to(device), targets.to(device)
                 outputs, _, _, _ = model(v1, view2=None)
                 loss = criterion(outputs, targets)
-                
+
+            #print( indices.to_numpy(), end='|', flush=True )
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
@@ -492,9 +710,16 @@ def train_with_early_stopping(model, trn_loader, val_loader, target_cols, mode, 
         all_true_labels = []
         all_pred_probs = []        
         with torch.no_grad():
-            for v1_val, targets_val, _ in val_loader:
+            for data in val_loader:
+                if mode == "dual_view":
+                    v1_val, v2_val, targets_val, _ = data 
+                    v2_val = v2_val.to(device)
+                else:
+                    v1_val, targets_val, _ = data 
+                    v2_val = None
+                    
                 v1_val, targets_val = v1_val.to(device), targets_val.to(device)
-                outputs_val, _, _, _ = model(v1_val, view2=None) # Single-view capabilities check
+                outputs_val, _, _, _ = model(v1_val, v2_val) # Single-view capabilities check
                 
                 loss_val = criterion(outputs_val, targets_val)
                 val_loss += loss_val.item()
@@ -570,13 +795,19 @@ def evaluate_on_test_set( mode, model, tst_loader, target_cols, device):
                 test_v1, test_targets, _ = data
                 test_v2 = None            
             test_v1 = test_v1.to(device)
-            prob_single = torch.sigmoid(model(test_v1,test_v2)).cpu().numpy()
+            output=model(test_v1,test_v2)
+            if isinstance(output, tuple):
+                logits = output[0]
+            else:
+                logits = output
+                
+            prob_single = torch.sigmoid(logits).cpu().numpy().squeeze()
             
             all_true_labels.append(test_targets.numpy().squeeze())
-            all_single_probs.append(prob_single.squeeze())
+            all_single_probs.append(prob_single)
             
     y_true_matrix = np.atleast_2d(np.array(all_true_labels))
-    y_single_matrix = np.atleast_2d(np.array(all_single_probs))
+    y_single_matrix = np.atleast_2d(np.array(all_single_probs))    
     
     metrics_to_track = ["AUROC", "AUPRC", "Accuracy", "Balanced_Accuracy", "Specificity"]
     performance_records = []    
@@ -595,21 +826,57 @@ def evaluate_on_test_set( mode, model, tst_loader, target_cols, device):
     print(metrics_summary_df.groupby(["Metric"])[["Single_View_Only"]].mean())
     return metrics_summary_df    
 
+def check_batch():
+    for batch_idx, batch_indices in enumerate(train_batch_sampler):
+        print("batch:",  batch_idx, batch_indices)    
+        batch_df = trn_ds.samples.iloc[batch_indices]    
+        n_positive = (            batch_df[tasks[0]] == 1        ).sum()    
+        print(            "size:",            len(batch_indices),            "positive:",            n_positive        )    
+        if batch_idx >= 2:
+            break
+
 if __name__ == "__main__":    
     df2, tc = reformat_and_prepare_odir( odir_df )
     trn_df, val_df, tst_df = split_dataset_by_patient( df2 )    
     trn_df = filter_existing_images(trn_df, IM_DIR)
     val_df = filter_existing_images(val_df, IM_DIR)
     tst_df = filter_existing_images(tst_df, IM_DIR)    
+
+    for i in [0,1]: print( 'Trn:',i, (trn_df['A']==i).sum(),end='|');print( 'Val:',i, (val_df['A']==i).sum(),end='|');print( 'Tst:',i, (tst_df['A']==i).sum(),end='\n')
+
+    def probability_positive_batch(p, batch_size):
+        return 1.0 - (1.0 - p) ** batch_size
+    p = trn_df[tasks].values.mean()
+    for bs in [8, 16, 32, 48, 64]:
+        prob = probability_positive_batch(p, bs)    
+        print(    f"BS={bs:2d} -> ", f"P(at least one positive)={prob:.3f}" )
+
+    BS = 8
+    IMBALANCE = 'atleastone'#'increasebs'; 
+    print('IMBALANCE CLASS handling method:', IMBALANCE )
     
     res_dfs,models,loaders={},{},{}
     for MODE in ['single_view','dual_view']:
-        loaders['trn'] = DataLoader(ODIRDataset(trn_df, tasks, image_dir=IM_DIR, mode=MODE, centroid_crop=centroid_crop), batch_size=BS, shuffle=True)
+
+        trn_ds = ODIRDataset(trn_df, tasks, image_dir=IM_DIR, mode=MODE, centroid_crop=centroid_crop)
+        if IMBALANCE == 'atleastone':            
+            train_batch_sampler = AtLeastOnePositiveBatchSampler(
+                trn_ds,  
+                batch_size=BS,
+                target_col= tasks[0],
+                drop_last=False,
+                shuffle=True,
+                seed=SEED
+            )
+            check_batch()
+            loaders['trn']  = DataLoader( trn_ds, batch_sampler=train_batch_sampler )
+        else:            
+            loaders['trn']  = DataLoader( trn_ds, batch_size=BS, shuffle=True)
         loaders['val'] = DataLoader(ODIRDataset(val_df, tasks, image_dir=IM_DIR, mode=MODE, centroid_crop=centroid_crop), batch_size=BS, shuffle=True)
         loaders['tst'] = DataLoader(ODIRDataset(tst_df, tasks, image_dir=IM_DIR, mode=MODE, centroid_crop=centroid_crop), batch_size=BS, shuffle=True)
 
         if 'dual' in MODE:
-            sample_batch_v1, sample_batch_v2, sample_batch_labels, sample_batch_indices = next(iter(loaders2['trn']))
+            sample_batch_v1, sample_batch_v2, sample_batch_labels, sample_batch_indices = next(iter( loaders['trn'] ))
             show_batch(sample_batch_v2,8)            
 
         sample_batch_v1, sample_batch_labels, sample_batch_indices = next(iter(loaders['tst']))
@@ -620,5 +887,5 @@ if __name__ == "__main__":
         show_batch(sample_batch_v1)        
         model = get_backbone( RES1, RES2) 
         models[MODE] = train_with_early_stopping( SiameseRETFoundGreen(model, len(tasks)), loaders['trn'], loaders['val'], tasks, mode=MODE, device=DEVICE )    
-        res_dfs[MODE] = evaluate_on_test_set( models[MODE], MODE, loaders['tst'], tasks, DEVICE)
+        res_dfs[MODE] = evaluate_on_test_set( MODE, models[MODE], loaders['tst'], tasks, DEVICE)
         print(res_dfs[MODE])  
