@@ -1,0 +1,57 @@
+experiment:
+  name: odir_dual_view
+  mode: dual_view
+  task: A
+
+seed: 41
+
+dataset:
+  name: ODIR-5K
+  image_dir: "${DATA_DIR}/Training Images"
+  metadata_file: "${DATA_DIR}/data.xlsx"
+
+  split:
+    strategy: patient
+    train: 0.70
+    validation: 0.15
+    test: 0.15
+
+  preprocessing:
+    centroid_crop: true
+    patch_size: 14
+    image_size: 980
+
+model:
+  name: SiameseRETFoundGreen
+
+  backbone:
+    name: RETFound
+    pretrained: true
+
+  num_classes: 2
+  res1: 980
+  res2: 980
+
+training:
+  batch_size: 16
+  learning_rate: 0.0001
+  max_epochs: 20
+
+  optimizer:
+    name: Adam
+
+  early_stopping:
+    enabled: true
+    patience: 5
+    monitor: val_loss
+    mode: min
+
+  loss:
+    alpha: 0.1
+
+evaluation:
+  threshold: 0.5
+
+output:
+  directory: "results/odir_dual_view"
+  checkpoint_directory: "checkpoints/odir_dual_view"
