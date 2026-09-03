@@ -1,11 +1,8 @@
-
-
-import os
-import math
-import random
+import os, math, random
 import numpy as np
 import pandas as pd
-import torch
+import matplotlib.pyplot as plt
+import torch, timm
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.functional as F
@@ -15,25 +12,32 @@ from torch.autograd import Function
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from PIL import Image, ImageDraw
-import timm
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 from sklearn.model_selection import GroupKFold
 from sklearn.metrics import (
     roc_auc_score, average_precision_score, accuracy_score, 
     balanced_accuracy_score, precision_score, recall_score, 
     f1_score, confusion_matrix, cohen_kappa_score, mean_absolute_error
 )
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+SEED=41
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
 
 # ----------------------------------------------------
 # PARAMETERS
 # ----------------------------------------------------
 PATCH_SIZE = 14
-RES1=RES2=784
-BATCH_SIZE = 16
-NUM_CLASSES = 2
-EPOCHS = 3
-LR = 1e-4
+RES1=RES2= np.uint16(14*28*2.5)
  
+NUM_CLASSES = 2
+LR = 1e-4
+MAX_EPOCHS = 2
+tasks = ['A']  
+BS = 8
+centroid_crop = True 
 DATA_DIR = '/kaggle/input/datasets/andrewmvd/ocular-disease-recognition-odir5k/ODIR-5K/ODIR-5K/'
 odir_df = pd.read_excel( DATA_DIR + 'data.xlsx')
 IM_DIR = DATA_DIR + '/Training Images'
@@ -69,7 +73,7 @@ def split_dataset_by_patient(df):
     guaranteeing zero patient_id overlap.
     """
     # Clean/shuffle the dataset deterministically
-    df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+    df = df.sample(frac=1, random_state=SEED).reset_index(drop=True)
     
     # Use GroupKFold on patient_id to split off a 15% Test Set first
     # 6 folds means each fold is roughly 16.6% of the data
@@ -89,7 +93,6 @@ def split_dataset_by_patient(df):
         
     print(f"Split complete! Train patients: {train_df['patient_id'].nunique()} | Val patients: {val_df['patient_id'].nunique()} | Test patients: {test_df['patient_id'].nunique()}")
     return train_df, val_df, test_df
-
 
 def filter_existing_images(df, image_dir):
     """
@@ -114,7 +117,7 @@ def filter_existing_images(df, image_dir):
     return clean_df
 
 class ODIRDataset(Dataset):
-    def __init__(self, dataframe, target_cols, image_dir, mode="dual_view", apply_dropout=True, centroid_crop=True, target_size=(392, 392)):
+    def __init__(self, dataframe, target_cols, image_dir, mode="dual_view", centroid_crop=True, target_size=(392, 392)):
         """
         Args:
             dataframe (pd.DataFrame): Input split metadata dataframe
@@ -123,14 +126,15 @@ class ODIRDataset(Dataset):
             mode (str): "dual_view" (Siamese) or "single_view" (Flattened)
             target_size (tuple): Output image shape matching your RETFound-Green grid (e.g., 392x392)
         """
-        self.apply_dropout = apply_dropout 
+        self.mode = mode
+        self.apply_dropout = apply_dropout=(self.mode == "dual_view") 
         self.centroid_crop = centroid_crop 
         if isinstance(target_cols, str):
             self.target_cols = [target_cols]
         else:
             self.target_cols = list(target_cols)
             
-        self.mode = mode
+        
         self.image_dir = image_dir
         self.target_size = target_size
         self.dataframe = dataframe.copy()
@@ -242,8 +246,6 @@ class ODIRDataset(Dataset):
 # ----------------------------------------------------
 # UTILS
 # ----------------------------------------------------
-import matplotlib.pyplot as plt
-
 def show_batch( sample_batch_imgs, n=8 ):
     fig, axes = plt.subplots(2, 4, figsize=(16, 8))
     axes = axes.flatten()
@@ -270,11 +272,9 @@ def show_batch( sample_batch_imgs, n=8 ):
         # Parse target labels matrix to display current true state values
         label_value = int(sample_batch_labels[i].item())
         axes[i].set_title(f"Sample {i} | Label {task_names[0]}: {label_value}", fontsize=10)
-        axes[i].axis('off') # Hide coordinate grid lines for clean presentation
-    
+        axes[i].axis('off') # Hide coordinate grid lines for clean presentation    
     plt.tight_layout()
     plt.show()
-
 
 class EarlyStopping:
     def __init__(self, patience=5, min_delta=0, checkpoint_path="best_model.pt", mode="min"):
@@ -291,8 +291,7 @@ class EarlyStopping:
         self.mode = mode
         self.counter = 0
         self.best_score = None
-        self.early_stop = False
-        
+        self.early_stop = False        
     def __call__(self, current_score, model):
         # Convert performance metrics so that higher scores are always better
         score = -current_score if self.mode == "min" else current_score
@@ -309,18 +308,14 @@ class EarlyStopping:
             self.best_score = score
             self.save_checkpoint(model)
             self.counter = 0
-
     def save_checkpoint(self, model):
         """Saves model weights when the validation performance hits a historic high."""
         torch.save(model.state_dict(), self.checkpoint_path)
         print(f"Validation improved! Saving optimal model weights state to: {self.checkpoint_path}")
 
-
-
 def specificity_score(y, q):
     tn, fp, _, _ = confusion_matrix(y, q, labels=[0, 1]).ravel()
     return np.nan if (tn + fp) == 0 else tn / (tn + fp)
-
 def calc_bin(y, p, t, m):
     y, p = np.asarray(y), np.asarray(p)
     ok = pd.notna(y) & np.isfinite(p)
@@ -356,9 +351,8 @@ class SiameseRETFoundGreen(nn.Module):
         else:            
             logits = self.classifier(feat1)        
             return logits, feat1, None, feat1
-
-
-def get_backbone():    
+ 
+def get_backbone( RES1, RES2):    
     model = timm.create_model(
         "vit_small_patch14_reg4_dinov2",
         img_size=(RES1,RES2),
@@ -376,55 +370,31 @@ def get_backbone():
         state_dict = checkpoint
     
     print("Checkpoint pos_embed:", state_dict["pos_embed"].shape)
-    #print(type(checkpoint))
-
+    
     # --------------------------------------------------
     # Interpolate positional embeddings
     # --------------------------------------------------
-    pos_embed = state_dict["pos_embed"]
-    
-    B, N, C = pos_embed.shape
-    
+    pos_embed = state_dict["pos_embed"]    
+    B, N, C = pos_embed.shape    
     old_grid = int(N ** 0.5)
-    new_grid = model.patch_embed.grid_size[0]
-    
+    new_grid = model.patch_embed.grid_size[0]    
     print("Old grid:", old_grid)
-    print("New grid:", new_grid)
-    
+    print("New grid:", new_grid)    
     assert old_grid * old_grid == N
-    assert new_grid * new_grid == model.pos_embed.shape[1]
-    
-    # [1, 784, 384]
-    # → [1, 384, 28, 28]
-    pos_embed = pos_embed.reshape(
-        B, old_grid, old_grid, C
-    ).permute(0, 3, 1, 2)
-    
+    assert new_grid * new_grid == model.pos_embed.shape[1]    
+    # [1, 784, 384] → [1, 384, 28, 28]
+    pos_embed = pos_embed.reshape(B, old_grid, old_grid, C ).permute(0, 3, 1, 2)    
     # 28×28 → 56×56
-    pos_embed = F.interpolate(
-        pos_embed,
-        size=(new_grid, new_grid),
-        mode="bicubic",
-        align_corners=False,
-    )
-    
-    # [1, 384, 56, 56]
-    # → [1, 3136, 384]
-    pos_embed = pos_embed.permute(
-        0, 2, 3, 1
-    ).reshape(
-        B, new_grid * new_grid, C
-    )
-    
-    state_dict["pos_embed"] = pos_embed
-    
+    pos_embed = F.interpolate( pos_embed, size=(new_grid, new_grid), mode="bicubic", align_corners=False )    
+    # [1, 384, 56, 56] → [1, 3136, 384]
+    pos_embed = pos_embed.permute( 0, 2, 3, 1).reshape( B, new_grid * new_grid, C )    
+    state_dict["pos_embed"] = pos_embed    
     print("Interpolated pos_embed:", state_dict["pos_embed"].shape)
     print("Image size:", model.patch_embed.img_size)
     print("Grid size:", model.patch_embed.grid_size)
     print("Patch size:", model.patch_embed.patch_size)
     print("Pos embed:", model.pos_embed.shape)
     return model
-
 # ----------------------------------------------------
 # TRAINING ENGINE 
 # ----------------------------------------------------
@@ -432,17 +402,19 @@ def train_with_early_stopping(model, trn_loader, val_loader, target_cols, mode, 
     print(f"\n>>> Launching Development Loop [Configuration Mode: {mode.upper()}]")
         
     model.to(device)
-    optimizer = optim.AdamW(model.parameters(), lr=1e-4)
-    criterion = nn.BCEWithLogitsLoss()
-    
-    # Early Stopping monitors validation loss
+    optimizer = optim.AdamW(model.parameters(), lr=1e-4)    
     early_stopper = EarlyStopping(patience=patience, checkpoint_path=f"best_{mode}_model.pt", mode="min")
+    
+    n_positive = trn_df[target_cols].sum()
+    n_negative = len(trn_df) - n_positive    
+    pos_weight = torch.tensor(
+        [n_negative / n_positive],
+        dtype=torch.float32,
+        device=DEVICE
+    ); criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         
     for epoch in range(1, MAX_EPOCHS + 1):
-        # --- A. TRAINING PASS ---
-        model.train()
-        train_loss = 0.0
-        
+        model.train(); train_loss = 0.0        
         for data in trn_loader:
             optimizer.zero_grad()
             
@@ -477,11 +449,9 @@ def train_with_early_stopping(model, trn_loader, val_loader, target_cols, mode, 
         
         # --- B. VALIDATION PASS WITH TASK-WISE AUROC TRACKING ---
         model.eval()
-        val_loss = 0.0
-        
+        val_loss = 0.0        
         all_true_labels = []
-        all_pred_probs = []
-        
+        all_pred_probs = []        
         with torch.no_grad():
             for v1_val, targets_val, _ in val_loader:
                 v1_val, targets_val = v1_val.to(device), targets_val.to(device)
@@ -517,13 +487,11 @@ def train_with_early_stopping(model, trn_loader, val_loader, target_cols, mode, 
         early_stopper(avg_val_loss, model)
         if early_stopper.early_stop:
             print(f">>> Early stopping triggered! Training stopped at epoch {epoch}.")
-            break
-            
+            break            
     # Load the best model weights before returning to ensure optimal test evaluations
     model.load_state_dict(torch.load(f"best_{mode}_model.pt"))
     print(f"Loaded best weights from checkpoint file successfully.")
     return model
-
 # ----------------------------------------------------
 # RUN EXPERIMENT 
 # ----------------------------------------------------
@@ -541,103 +509,10 @@ def run_ablation_study():
         device=DEVICE,
         patience=5,
         alpha=0.1 # Adjust this value between 0.0 and 0.1 to evaluate performance shifts
-    )
-    
-    return model_single_view
-class SiameseRETFoundGreen(nn.Module):
-    def __init__(self, backbone, num_classes):
-        super().__init__()
-        # We instantiate ONLY ONE backbone instance
-        self.backbone = backbone
-        self.backbone.global_pool = 'avg'
-        
-        # We instantiate ONLY ONE classification linear head
-        self.classifier = nn.Linear( self.backbone.embed_dim, num_classes)
-
-    def forward(self, view1, view2):
-        # View 1 and View 2 reuse the EXACT SAME backbone weights!
-        feat1 = self.backbone(view1)  
-        if view2 is not None:
-            feat2 = self.backbone(view2)
-        
-            # Symmetrically fuse the information down to a single vector
-            combined_features = torch.max(feat1, feat2)
-            return self.classifier(combined_features)
-        else:            
-             return self.classifier(feat1)        
-        
+    )    
+    return model_single_view          
 # ----------------------------------------------------
-# 4. TRAINING MODULES
-# ----------------------------------------------------
-def train_with_early_stopping(model, trn_loader, val_loader, target_cols, mode, device, patience=5):
-    print(f"\n>>> Launching Development Loop [Configuration Mode: {mode.upper()}]")
-        
-    model.to(device)
-    optimizer = optim.AdamW(model.parameters(), lr=1e-4)
-    criterion = nn.BCEWithLogitsLoss()
-    
-    # Initialize Early Stopping monitoring the validation loss ("min")
-    early_stopper = EarlyStopping(patience=patience, checkpoint_path=f"best_{mode}_model.pt", mode="min")
-        
-    for epoch in range(1, MAX_EPOCHS + 1):
-        # --- A. TRAINING PASS ---
-        model.train()
-        train_loss = 0.0
-        
-        for data in trn_loader:
-            optimizer.zero_grad()
-            
-            if mode == "dual_view":
-                v1, v2, targets, _ = data
-                v1, v2, targets = v1.to(device), v2.to(device), targets.to(device)                
-            else:
-                v1, targets, _ = data
-                v1, targets = v1.to(device), targets.to(device)
-                v2 = None
-            outputs = model(v1, v2)
-                
-            loss = criterion(outputs, targets)
-            loss.backward()
-            optimizer.step()
-            train_loss += loss.item()
-            
-        avg_train_loss = train_loss / len(trn_loader)
-        
-        # --- B. VALIDATION PASS BASED ON LOADERS['VAL'] ---
-        model.eval()
-        val_loss = 0.0
-        with torch.no_grad():
-            for data in val_loader:
-                if mode == "dual_view":
-                    v1_val, v2_val, targets_val, _ = data
-                    v1_val, v2_val, targets_val = v1_val.to(device), v2_val.to(device), targets_val.to(device)                    
-                else:
-                    v1_val, targets_val, _ = data
-                    v1_val, targets_val = v1_val.to(device), targets_val.to(device)                
-                    v2_val = None
-                
-                outputs_val = model(v1_val, v2_val)  
-                loss_val = criterion(outputs_val, targets_val)
-                val_loss += loss_val.item()
-                
-        avg_val_loss = val_loss / len(val_loader)
-        
-        print(f"Epoch {epoch:02d} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
-        
-        # --- C. EARLY STOPPING TRIGGER ---
-        early_stopper(avg_val_loss, model)
-        if early_stopper.early_stop:
-            print(f">>> Early stopping triggered! Training stopped at epoch {epoch}.")
-            break
-            
-    # Load the best model weights before returning to ensure optimal test evaluations
-    model.load_state_dict(torch.load(f"best_{mode}_model.pt"))
-
-    
-    print(f"Loaded best weights from checkpoint file successfully.")
-    return model
-# ----------------------------------------------------
-# 5. INTEGRATED TASK EVALUATION ROUTINE
+# EVALUATION 
 # ----------------------------------------------------
 def evaluate_on_test_set( mode, model, tst_loader, target_cols, device):
     print("\n" + "="*60)
@@ -679,25 +554,16 @@ def evaluate_on_test_set( mode, model, tst_loader, target_cols, device):
     metrics_summary_df = pd.DataFrame(performance_records)
     print("\n>>> MACRO SUMMARY BY METRIC STRATEGIES:")
     print(metrics_summary_df.groupby(["Metric"])[["Single_View_Only"]].mean())
-    return metrics_summary_df
-    
+    return metrics_summary_df    
 
-if __name__ == "__main__":
-    
+if __name__ == "__main__":    
     df2, tc = reformat_and_prepare_odir( odir_df )
-    trn_df, val_df, tst_df = split_dataset_by_patient( df2 )
-    
-    # Clean your splits before passing them to ODIRAblationDataset
+    trn_df, val_df, tst_df = split_dataset_by_patient( df2 )    
     trn_df = filter_existing_images(trn_df, IM_DIR)
     val_df = filter_existing_images(val_df, IM_DIR)
-    tst_df = filter_existing_images(tst_df, IM_DIR)
-    
+    tst_df = filter_existing_images(tst_df, IM_DIR)    
     
     res_dfs,models,loaders={},{},{}
-    MAX_EPOCHS = 2
-    tasks = ['A']  
-    BS = 8
-    centroid_crop = True
     for MODE in ['single_view','dual_view']:
         loaders['trn'] = DataLoader(ODIRDataset(trn_df, tasks, image_dir=IM_DIR, mode=MODE, centroid_crop=centroid_crop), batch_size=BS, shuffle=True)
         loaders['val'] = DataLoader(ODIRDataset(val_df, tasks, image_dir=IM_DIR, mode=MODE, centroid_crop=centroid_crop), batch_size=BS, shuffle=True)
@@ -710,12 +576,10 @@ if __name__ == "__main__":
         sample_batch_v1, sample_batch_labels, sample_batch_indices = next(iter(loaders['tst']))
         print("Returned Batch Image Shape:", sample_batch_v1.shape)   # Expected: [8, 3, 224, 224]
         print("Returned Batch Label Shape:", sample_batch_labels.shape) # Expected: [8, 1]
-        print("Returned Label Values:\n", sample_batch_labels)        
+        print("Returned Label Values:\n", sample_batch_labels)       
         
-        show_batch(sample_batch_v1)
-        
+        show_batch(sample_batch_v1)        
+        model = get_backbone( RES1, RES2) 
         models[MODE] = train_with_early_stopping( SiameseRETFoundGreen(model, len(tasks)), loaders['trn'], loaders['val'], tasks, mode=MODE, device=DEVICE )    
         res_dfs[MODE] = evaluate_on_test_set( models[MODE], MODE, loaders['tst'], tasks, DEVICE)
-        print(res_dfs[MODE])
-    
-     
+        print(res_dfs[MODE])  
