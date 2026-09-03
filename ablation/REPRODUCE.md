@@ -14,8 +14,8 @@ The project uses:
 The goal is that a researcher can clone this repository on another compatible HPC cluster and reproduce the experiments without manually recreating the original Python environment.
 
 <details>
+    
     <summary>1. Repository structure</summary>
-
 
 The recommended repository structure is:
 ```
@@ -55,6 +55,8 @@ project/
 Large datasets and experiment outputs should generally not be committed to Git.
 
 </details>
+
+
 
 <details>
  
