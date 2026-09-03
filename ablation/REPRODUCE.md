@@ -13,7 +13,7 @@ The project uses:
 
 The goal is that a researcher can clone this repository on another compatible HPC cluster and reproduce the experiments without manually recreating the original Python environment.
 
-## Repository structure
+## 1. Repository structure
 
 The recommended repository structure is:
 ```
@@ -52,7 +52,7 @@ project/
 
 Large datasets and experiment outputs should generally not be committed to Git.
 
-## Development environment on the original HPC system
+## 2. Development environment on the original HPC system
 
 The first step is to create an isolated Python environment.
 
@@ -72,7 +72,7 @@ For example:
 
 Do not copy module names blindly between clusters. Rorqual and Narval may provide different module versions.
 
-3. Create the virtual environment
+## 3. Create the virtual environment
 
 Create a project-specific virtual environment:
 
@@ -95,7 +95,11 @@ Upgrade packaging tools:
 
 ```pip install --upgrade pip setuptools wheel```
 
-4. Install the project dependencies
+<details>
+    
+<summary>
+### 4. Install the project dependencies    
+</summary>
 
 Install the dependencies required by the project.
 
@@ -138,6 +142,10 @@ PY
 
 Do not proceed with a long experiment until GPU availability has been verified.
 
+</details>
+
+
+<details>
 6. Test the project outside the container
 
 Before creating a container, make sure the ordinary Python environment works.
@@ -234,7 +242,12 @@ retinal-ablation:2.0
 
 Do not silently replace the container used for a published experiment.
 
-10. Convert/publish the container for HPC use
+</details>
+
+
+<details>
+
+    10. Convert/publish the container for HPC use
 
 HPC systems commonly use Apptainer rather than Docker for execution.
 
@@ -480,7 +493,10 @@ Conceptually:
                         v
                  same experiment
 ```
+</details>
 
+
+<details>
 20. Example SLURM script
 
 A cluster-specific script might look conceptually like:
@@ -605,6 +621,8 @@ The container is the canonical execution environment for published experiments.
 The goal is:
 
 Change the cluster configuration, not the experiment itself.
+
+</details>
 
 <details>
   
