@@ -13,7 +13,9 @@ The project uses:
 
 The goal is that a researcher can clone this repository on another compatible HPC cluster and reproduce the experiments without manually recreating the original Python environment.
 
-## 1. Repository structure
+<details>
+    <summary>1. Repository structure</summary>
+
 
 The recommended repository structure is:
 ```
@@ -52,7 +54,11 @@ project/
 
 Large datasets and experiment outputs should generally not be committed to Git.
 
-## 2. Development environment on the original HPC system
+</details>
+
+<details>
+ 
+<summary> 2. Development environment on the original HPC system</summary>
 
 The first step is to create an isolated Python environment.
 
@@ -95,11 +101,11 @@ Upgrade packaging tools:
 
 ```pip install --upgrade pip setuptools wheel```
 
+</details>
+    
 <details>
     
-<summary>
-### 4. Install the project dependencies    
-</summary>
+<summary>4. Install the project dependencies    </summary>
 
 Install the dependencies required by the project.
 
