@@ -26,10 +26,40 @@ np.random.seed(SEED)
 torch.manual_seed(SEED)
 torch.cuda.manual_seed_all(SEED)
 
+import argparse
+import yaml
+def load_config(path):
+    with open(path, "r") as f:
+        return yaml.safe_load(f)
+
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--config",
+    required=True,
+    help="Path to experiment YAML configuration"
+)
+
+parser.add_argument(
+    "--data-dir",
+    default=None,
+    help="Override dataset directory"
+)
+
+parser.add_argument(
+    "--seed",
+    type=int,
+    default=None,
+    help="Override random seed"
+)
+
+args = parser.parse_args()
+config = load_config(args.config)
+
+
 # ----------------------------------------------------
 # PARAMETERS
 # ----------------------------------------------------
-PATCH_SIZE = 14
+#PATCH_SIZE = 14
 RES1=RES2= np.uint16(14*28*2.5)
  
 NUM_CLASSES = 2
