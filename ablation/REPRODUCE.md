@@ -15,7 +15,7 @@ The goal is that a researcher can clone this repository on another compatible HP
 
 <details>
     
-    <summary>1. Repository structure</summary>
+<summary>1. Repository structure</summary>
 
 The recommended repository structure is:
 ```
