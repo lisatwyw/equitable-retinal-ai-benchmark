@@ -7,9 +7,9 @@ seed: 41
 
 dataset:
   name: ODIR-5K
-  image_dir: "${DATA_DIR}/Training Images"
-  metadata_file: "${DATA_DIR}/data.xlsx"
-
+  metadata_file: data.xlsx
+  image_subdirectory: "Training Images"
+  
   split:
     strategy: patient
     train: 0.70
