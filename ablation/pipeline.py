@@ -52,9 +52,18 @@ parser.add_argument(
     help="Override random seed"
 )
 
-args = parser.parse_args()
+#args = parser.parse_args()
+data_dir = args.data_dir
 config = load_config(args.config)
 
+metadata_file = os.path.join(
+    data_dir,
+    config["dataset"]["metadata_file"]
+)
+image_dir = os.path.join(
+    data_dir,
+    config["dataset"]["image_subdirectory"]
+)
 
 # ----------------------------------------------------
 # PARAMETERS
