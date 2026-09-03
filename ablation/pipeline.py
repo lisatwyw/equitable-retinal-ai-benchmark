@@ -653,12 +653,12 @@ class EarlyStopping:
         torch.save(model.state_dict(), self.checkpoint_path)
         print(f"Validation improved! Saving optimal model weights state to: {self.checkpoint_path}")
 
-def train_with_early_stopping(model, trn_loader, val_loader, target_cols, mode, device, patience=5, alpha=0.1):
+def train_with_early_stopping(model, chkpoint_filepath, trn_loader, val_loader, target_cols, mode, device, patience=5, alpha=0.1):
     print(f"\n>>> Launching Development Loop [Configuration Mode: {mode.upper()}]")
         
     model.to(device)
     optimizer = optim.AdamW(model.parameters(), lr=1e-4)    
-    early_stopper = EarlyStopping(patience=patience, checkpoint_path=f"best_{mode}_model.pt", mode="min")
+    early_stopper = EarlyStopping(patience=patience, checkpoint_path = chkpoint_filepath, mode="min")
     
     n_positive = trn_df[target_cols].values.sum()    
     n_negative = len(trn_df) - n_positive        
@@ -753,7 +753,7 @@ def train_with_early_stopping(model, trn_loader, val_loader, target_cols, mode, 
             print(f">>> Early stopping triggered! Training stopped at epoch {epoch}.")
             break            
     # Load the best model weights before returning to ensure optimal test evaluations
-    model.load_state_dict(torch.load(f"best_{mode}_model.pt"))
+    model.load_state_dict(torch.load( chkpoint_filepath ))
     print(f"Loaded best weights from checkpoint file successfully.")
     return model
 # ----------------------------------------------------
@@ -886,6 +886,7 @@ if __name__ == "__main__":
         
         show_batch(sample_batch_v1)        
         model = get_backbone( RES1, RES2) 
-        models[MODE] = train_with_early_stopping( SiameseRETFoundGreen(model, len(tasks)), loaders['trn'], loaders['val'], tasks, mode=MODE, device=DEVICE )    
+        chkpoint_filepath = f'{MODE}_res{RES1}_bs{BS}_{IMBALANCE}.pt'
+        models[MODE] = train_with_early_stopping( SiameseRETFoundGreen(model, len(tasks)), chkpoint_filepath, loaders['trn'], loaders['val'], tasks, mode=MODE, device=DEVICE )    
         res_dfs[MODE] = evaluate_on_test_set( MODE, models[MODE], loaders['tst'], tasks, DEVICE)
         print(res_dfs[MODE])  
