@@ -90,21 +90,6 @@ Classification parameters
 
 </details>
 
-<details>
-
-<summary>Reproducing the experimental results</summary> 
-
-## Installation
-
-```bash
-git clone https://github.com/lisatwyw/equitable-retinal-ai-benchmark.git
-cd equitable-retinal-ai-benchmark
-pip install -r requirements.txt
-```
-
-
-</details>
-
 
 <details>
 
