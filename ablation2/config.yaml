@@ -1,0 +1,40 @@
+# ============================================================
+# Privileged Distillation Config
+# ============================================================
+
+# ---- Dataset paths ----
+dataset:
+  data_dir: "../../ODIR-5K/ODIR-5K/"
+  metadata_file: "data.xlsx"
+  image_subdirectory: "trn"
+
+# ---- Checkpoint for the frozen RETFound-Green backbone ----
+checkpoint_path: "../retfoundgreen_statedict.pth"
+
+# ---- Task ----
+TK: "A"                # "A" for AMD, "D" for diabetic retinopathy
+
+# ---- Optimisation ----
+max_epochs: 20
+lr: 1.0e-5
+alpha: 0.1             # weight on the distillation term
+centroid_crop: true    # crop to a square centered on the retinal disk
+
+# ---- Teacher-mode ladder (information content) ----
+# full       : both eyes intact (upper bound)
+# corrupted  : right eye + Gaussian noise
+# shuffled   : right eye from a different patient
+# masked     : right eye zeroed
+# monocular  : left eye only (lower bound, no privileged modality)
+teacher_mode: "full"
+noise_std: 0.5         # only used when teacher_mode == "corrupted"
+
+# ---- Distillation-channel ablation ----
+# mse         : MSE on features (original implementation)
+# kl          : KL divergence on temperature-softened logits
+# contrastive : InfoNCE between student and teacher features
+# cka         : 1 - linear CKA between features
+# gated_aux   : BCE against teacher probabilities, gated on confidence
+distill_loss: "gated_aux"
+distill_temp: 4.0             # only used when distill_loss == "kl"
+distill_conf_thresh: 0.5      # only used when distill_loss == "gated_aux"
