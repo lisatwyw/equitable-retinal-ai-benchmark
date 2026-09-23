@@ -66,6 +66,75 @@ from scipy.stats import kruskal, chi2_contingency, fisher_exact, ttest_ind
 
 from contextlib import contextmanager
 
+
+
+# ============================================================
+# SETUP
+# ============================================================
+device= "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE = torch.device(device)
+
+ncores = len(os.sched_getaffinity(0))//2; pin_mem = (device=="cuda")       
+
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--seed", type=int, default=101)
+parser.add_argument("--TK", type=str, default='A')
+parser.add_argument("--RES1", type=int, default=980)
+parser.add_argument("--RES2", type=int, default=980)
+parser.add_argument("--fold", type=int, default=1)
+parser.add_argument("--two_stage", type=int, default=0)
+parser.add_argument("--TEMPERATURE", type=float, default=1.0)
+        
+args, _ = parser.parse_known_args()
+set_all_seeds(args.seed)
+
+def load_config(path):
+    with open(path, "r") as f:
+        return yaml.safe_load(f)
+
+
+print('Arguments to compare.py:\n', args)
+
+
+# ============================================================
+# CONFIG
+# ============================================================
+@dataclass
+class Config:
+    BS: int = 32
+    PATIENCE: int = 10
+    ALPHA: float = 0.1 # alpha for ci calc
+    CENTROID_CROP: bool = True
+    LR: float = 1e-5
+    MAX_EPOCHS: int = 50    
+    RES1: int = 392
+    RES2: int = 392
+    THRESHOLD_RULE = "mcc"        
+    res_dir: str = "./res/"
+    vis_dir: str = "./res/"
+
+    TEMPERATURE: float = 1.0
+    
+    two_stage: int = 0
+    fold: int = 1
+    TK: str = 'A'
+    task: str = TK
+    def checkpoint_filepath(self, method):
+        pref=self.pref()
+        return f"{pref}_{method}.pt"
+        
+    def pref(self):        
+        return f"{self.res_dir}{self.task}_fd{self.fold}_res{self.RES1}_bs{self.BS}_staged{self.two_stage}_T{self.TEMPERATURE}_alp{self.ALPHA}_crop{int(self.CENTROID_CROP)}_lr{self.LR}"        
+
+conf = Config(RES1=args.RES1, RES2=args.RES2, two_stage=args.two_stage, fold=args.fold, TK=args.TK)
+pref = conf.pref()
+
+
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
 @contextmanager
 def track_compute(name, log_to_file=True):
 
@@ -281,69 +350,6 @@ def cka_similarity(X, Y):
     return hsic / (norm_K * norm_L)
      
 
-# ============================================================
-# SETUP
-# ============================================================
-device= "cuda" if torch.cuda.is_available() else "cpu"
-DEVICE = torch.device(device)
-
-ncores = len(os.sched_getaffinity(0))//2; pin_mem = (device=="cuda")       
-
-
-
-parser = argparse.ArgumentParser()
-parser.add_argument("--seed", type=int, default=101)
-parser.add_argument("--TK", type=str, default='A')
-parser.add_argument("--RES1", type=int, default=392)
-parser.add_argument("--RES2", type=int, default=392)
-parser.add_argument("--fold", type=int, default=1)
-parser.add_argument("--two_stage", type=int, default=1)
-parser.add_argument("--TEMPERATURE", type=float, default=1.0)
-        
-args, _ = parser.parse_known_args()
-set_all_seeds(args.seed)
-
-def load_config(path):
-    with open(path, "r") as f:
-        return yaml.safe_load(f)
-
-
-print('Arguments to compare.py:\n', args)
-
-
-# ============================================================
-# CONFIG
-# ============================================================
-@dataclass
-class Config:
-    BS: int = 32
-    PATIENCE: int = 10
-    ALPHA: float = 0.1 # alpha for ci calc
-    CENTROID_CROP: bool = True
-    LR: float = 1e-5
-    MAX_EPOCHS: int = 50    
-    RES1: int = 392
-    RES2: int = 392
-    THRESHOLD_RULE = "mcc"        
-    res_dir: str = "./res/"
-    vis_dir: str = "./res/"
-
-    TEMPERATURE: float = 1.0
-    
-    two_stage: int = 1
-    fold: int = 1
-    TK: str = 'A'
-    task: str = TK
-    def checkpoint_filepath(self, method):
-        pref=self.pref()
-        return f"{pref}_{method}.pt"
-        
-    def pref(self):        
-        return f"{self.res_dir}{self.task}_fd{self.fold}_res{self.RES1}_bs{self.BS}_staged{self.two_stage}_T{self.TEMPERATURE}_alp{self.ALPHA}_crop{int(self.CENTROID_CROP)}_lr{self.LR}"        
-
-conf = Config(RES1=args.RES1, RES2=args.RES2, two_stage=args.two_stage, fold=args.fold, TK=args.TK)
-pref = conf.pref()
-
 def flush_log():
     for handler in logging.root.handlers:
         handler.flush()
@@ -376,8 +382,7 @@ else:
         IM_DIR = DATA_DIR + "/Training Images"
         CHKPATH = "rfg_statedict.pth"
     else:
-
-        CHKPATH = f"/project/{USERID}/HowRU/retinal/assets/retfoundgreen_statedict.pth"
+        CHKPATH = f"/project/{USERID}/retfoundgreen_statedict.pth"
         DATA_DIR = f"/project/{USERID}/ODIR-5K/ODIR-5K/"
         IM_DIR = DATA_DIR + "/trn"
     metadata_file = DATA_DIR + "data.xlsx"
@@ -1603,9 +1608,10 @@ if __name__ == "__main__":
                     break
                 preds[side,MODE,'val'] = run_inference(Models[MODE], val_loader, side)        
                 preds[side,MODE,'tst'] = run_inference(Models[MODE], test_loader, side)        
-                thresholds[side,MODE]  = select_optimal_threshold( conf, preds[side,MODE,'val'][0], preds[side,MODE,'val'][1] )            
+                thresholds[side,MODE]  = select_optimal_threshold( conf, preds[side,MODE,'val'][0], preds[side,MODE,'val'][1] )     # gt_labels in 1st, probs in 2nd       
+                
                 metrics[side, MODE], cis[side,MODE] = bootstrapped_metrics( preds[side,MODE,'tst'][0], preds[side,MODE,'tst'][1], thresholds[side,MODE], eye=side )    
-                get_predictions_df( preds[side,MODE,'tst'][0], preds[side,MODE,'tst'][1], preds[side,MODE,'tst'][2], thresholds[side,MODE], test_loader, side).to_csv( f"{pref}_{MODE}_preds.csv", index=False)
+                #get_predictions_df( preds[side,MODE,'tst'][0], preds[side,MODE,'tst'][1], preds[side,MODE,'tst'][2], thresholds[side,MODE], test_loader, side).to_csv( f"{pref}_{MODE}_preds.csv", index=False)
            
     # ============================================================
     # RUN EXTERNAL EVAL
@@ -1656,9 +1662,11 @@ if __name__ == "__main__":
                 print( d, MODE, side )
                 for k in ["AUROC", "AUPRC", "Accuracy", "Balanced_Accuracy", "F1", "F1_Macro", "Precision", "Recall", "FPR"]:
                     try:
+                        print(format_metric(k, metrics[side,MODE,DSET,d,'uncalib'][k], cis[side,MODE,DSET,d,'uncalib'][k]))      
                         print(format_metric(k, metrics[side,MODE,DSET,d][k], cis[side,MODE,DSET,d][k]))      
                     except:
                         pass
+                        
 
 
 # Add this to your main script

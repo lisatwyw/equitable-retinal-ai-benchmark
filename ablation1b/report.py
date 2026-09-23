@@ -154,7 +154,7 @@ def make_latex_table_transposed(
         lines += [
             r"\bottomrule",
             r"\end{tabular}",
-            r"\caption{", f"{conf.task}: Performance of the baseline and privileged-distillation "
+            r"\caption{", f"Detection of {conf.task}: Performance of the baseline and privileged-distillation "
             r"students. Each cell in the external blocks shows "
             r"\emph{split 1 / split 2}: Nikon abnormal image field and Nikon "
             r"normal image field. \emph{Strict}: decision threshold fixed from "
